@@ -1,6 +1,6 @@
 {
   "name": "gladys-slide",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for Slide curtain motors (Innovation in Motion), over their local API. Unofficial, not affiliated with Innovation in Motion.",
   "type": "module",

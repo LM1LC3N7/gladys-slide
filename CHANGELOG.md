@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-22
+
 ### Added
 
 - Slide curtain motors over their local API (up to 8, by IP address): each
@@ -42,3 +44,6 @@ the notes of the version's GitHub Release.
   the interval, a restart included.
 - A "Test the connection" button, English and French texts, the state of each
   Slide in the connection status.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-slide/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-slide/releases/tag/v0.1.1
