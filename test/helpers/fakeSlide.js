@@ -115,7 +115,14 @@ export function fakeSlides(slides) {
       throw new SlideError(failure.before, { sent: false });
     }
     // Connected: the last check of a command, right before the first byte.
-    req.beforeSend?.();
+    try {
+      req.beforeSend?.();
+    } catch (err) {
+      // As src/slide/http.js: nothing written, the refusal passed on.
+      err.beforeSend = true;
+      err.sent = false;
+      throw err;
+    }
     const record = { address, path: req.path, body: req.body, auth: Boolean(req.authorization) };
     requests.push(record);
     if (hold) {

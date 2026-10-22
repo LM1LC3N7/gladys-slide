@@ -17,7 +17,16 @@ the notes of the version's GitHub Release.
   position (read at a configurable interval, and after each command). Never a
   switch.
 - API v2 (no password) and API v1 (HTTP Digest with the device code printed on
-  the Slide), found by itself; the codes are never logged nor kept in `/data`.
+  the Slide), found by itself; the codes are typed as `address=code` pairs
+  (matched by address, never by order), never logged nor kept in `/data`; an
+  expired challenge (`stale`) or a 403 without a code is never taken as a
+  refused code.
+- Each Slide read at its own interval: changing the address or the code of one
+  reads only that one at once; a cycle with nothing to read waits for the
+  earliest end of a pause or next try, never loops; after a restart, a Slide
+  read recently is shown connected until its first read.
+- Only a recent position of a Slide that answers is published (never an old
+  one dated anew).
 - A calibration button, refused unless "Allow calibration" is on (read again
   right before the request leaves).
 - Moves checked against the identity (MAC address) of the Slide at the address

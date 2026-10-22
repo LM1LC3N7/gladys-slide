@@ -22,6 +22,11 @@ up to date at the end of every milestone.
       confirmation, refused code final, 429/5xx pause, last read time and
       identities in /data, Test button, en/fr, docs, cover. Tested against
       simulated Slides only.
+- [x] **Milestone 1 fixes — review 1** (2026-10-22): no cycle loop when no
+      Slide is due (B1), STOP cancels a move between the API v1 probe and its
+      authenticated request (I1), codes as `address=code` pairs (I2), nothing
+      of a replaced configuration after a command answered late (I3), only a
+      recent position of a Slide that answers is published (I4), M1-M7.
 - [ ] **Milestone 2 — real Slide**: run against a real Slide (API v1 and v2)
       and compare with the Slide app (see "To check"); turn the answers
       (anonymized) into fixtures.
@@ -68,7 +73,9 @@ up to date at the end of every milestone.
   neither: the Slide is not published ("identity cannot be read"), and read
   again at the next interval. `ext:<selector>:slide:<mac>`.
 - **Addresses and codes**: one text field of addresses (8 at most) and one
-  secret field of codes in the same order (an empty place for API v2). A
+  secret field of `address=code` pairs (review I2: matched by address, never by
+  position, since the secret is never shown again; an entry not understood, or
+  two codes for one address, is ignored and said in the status). A
   config save that changes neither restarts nothing and reads nothing.
 - **API version found by itself**: every call goes first without
   authentication; 200 = API v2; 401 with a Digest challenge = API v1 (nothing

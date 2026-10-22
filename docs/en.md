@@ -38,11 +38,14 @@ HomeKit or an assistant (MCP) closes it, as expected.
 1. In Gladys, open the **Slide curtains** integration, **Configuration** tab.
 2. Type the **addresses** of your Slides, separated by commas (8 at most), like
    `192.168.1.40, 192.168.1.41`.
-3. Only for Slides on API v1: type their **codes**, in the **same order** as
-   the addresses, separated by commas; leave the place empty for a Slide on API
-   v2. For example, with the addresses above and only the second Slide on API
-   v1: `,ABCD1234`. This field is kept by Gladys in its database, never shown
-   again, and the code is only sent to that Slide on your network.
+3. Only for Slides on API v1: type their **codes** as `address=code` pairs,
+   separated by commas; nothing for a Slide on API v2. For example, with the
+   addresses above and only the second Slide on API v1:
+   `192.168.1.41=ABCD1234`. A code is matched by its address, never by its
+   place in the list: when you change an address, type its pair again. This
+   field is kept by Gladys in its database, never shown again; it only serves to
+   answer the Digest challenge of the Slide at that address (the code itself is
+   never sent).
 4. Save, then press **Test the connection**: the state of each Slide is shown.
 5. Open the **Discovery** tab and add your Slides.
 
@@ -88,8 +91,8 @@ HomeKit or an assistant (MCP) closes it, as expected.
 
 - **"Unreachable"**: check the IP address (no `.local` name, the container does
   not resolve them), the Wi-Fi of the Slide, and that its local API is on.
-- **"Asks for its device code"**: this Slide is on API v1; type its code at the
-  same place in the list as its address.
+- **"Asks for its device code"**: this Slide is on API v1; type its pair
+  `address=code` in "Device codes".
 - **"Not found at the addresses typed"**: the address of a Slide changed; type
   the new one, its device and history are kept.
 - **Position reversed**: tell us on the GitHub repository.

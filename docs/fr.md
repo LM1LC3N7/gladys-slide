@@ -40,12 +40,14 @@ Google, d'Alexa, de HomeKit ou d'un assistant (MCP) le ferme, comme attendu.
    **Configuration**.
 2. Saisissez les **adresses** de vos Slides, séparées par des virgules (8 au
    plus), par exemple `192.168.1.40, 192.168.1.41`.
-3. Seulement pour des Slides en API v1 : saisissez leurs **codes**, dans le
-   **même ordre** que les adresses, séparés par des virgules ; laissez la place
-   vide pour un Slide en API v2. Par exemple, avec les adresses ci-dessus et un
-   seul Slide en API v1 (le second) : `,ABCD1234`. Ce champ est gardé par
-   Gladys dans sa base, jamais réaffiché, et le code n'est envoyé qu'à ce Slide
-   sur votre réseau.
+3. Seulement pour des Slides en API v1 : saisissez leurs **codes** en couples
+   `adresse=code`, séparés par des virgules ; rien pour un Slide en API v2. Par
+   exemple, avec les adresses ci-dessus et un seul Slide en API v1 (le second) :
+   `192.168.1.41=ABCD1234`. Un code est rattaché à son adresse, jamais à sa
+   place dans la liste : si vous changez une adresse, saisissez de nouveau son
+   couple. Ce champ est gardé par Gladys dans sa base, jamais réaffiché ; il sert
+   seulement à répondre au défi Digest du Slide à cette adresse (le code
+   lui-même ne circule pas).
 4. Enregistrez, puis cliquez sur **Tester la connexion** : l'état de chaque
    Slide s'affiche.
 5. Ouvrez l'onglet **Découverte** et ajoutez vos Slides.
@@ -94,7 +96,7 @@ Google, d'Alexa, de HomeKit ou d'un assistant (MCP) le ferme, comme attendu.
   conteneur ne les résout pas), le Wi-Fi du Slide, et que son API locale est
   activée.
 - **« Demande son code d'appareil »** : ce Slide est en API v1 ; saisissez son
-  code à la même place dans la liste que son adresse.
+  couple `adresse=code` dans « Codes des appareils ».
 - **« Introuvable aux adresses saisies »** : l'adresse d'un Slide a changé ;
   saisissez la nouvelle, son appareil et son historique sont gardés.
 - **Position inversée** : dites-le-nous sur le dépôt GitHub.

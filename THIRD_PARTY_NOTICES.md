@@ -14,7 +14,7 @@ NOTICE file.
 ## goslide-api
 
 <https://github.com/ualex73/goslide-api> (main branch, commit 5dac98b of
-2025-11-23; version 0.7.4 on PyPI), by Alexander Kuiper (author named in its
+2025-11-23; `setup.py` 0.7.3), by Alexander Kuiper (author named in its
 `setup.py`), the library of the Slide integration of Home Assistant. Its
 `LICENSE` file is the Apache License 2.0 text, whose appendix keeps the
 placeholders as they are:

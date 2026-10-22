@@ -102,10 +102,10 @@ const bounded = (value, { default: fallback, min, max }) => {
   return number === undefined ? fallback : Math.min(max, Math.max(min, Math.round(number)));
 };
 
-/** No control character, no comma, not too long: what a device code may hold. */
+/** No control character, no space, not too long: what a device code may hold. */
 const validCode = (code) =>
   code.length <= LIMITS.code &&
-  [...code].every((c) => c.codePointAt(0) >= 0x20 && c.codePointAt(0) !== 0x7f);
+  [...code].every((c) => c.codePointAt(0) > 0x20 && c.codePointAt(0) !== 0x7f);
 
 /** A list typed in a form: comma (or semicolon) separated, entries trimmed, empties kept. */
 const splitList = (text) => (text.trim() === '' ? [] : text.split(/[,;]/).map((s) => s.trim()));
@@ -126,14 +126,36 @@ export function normalizeConfig(raw = {}) {
     }
   }
   const addresses = splitList(typeof c.slides === 'string' ? c.slides : '');
-  const codes = splitList(typeof c.device_codes === 'string' ? c.device_codes : '');
+  // The codes as `address=code` pairs: matched by address, never by position
+  // (the secret field is never shown again: an order would shift unseen).
+  const codes = new Map();
+  let badCodes = false;
+  for (const entry of splitList(typeof c.device_codes === 'string' ? c.device_codes : '')) {
+    if (entry === '') {
+      continue;
+    }
+    const at = entry.lastIndexOf('=');
+    const parsed = at > 0 ? parseHost(entry.slice(0, at)) : {};
+    const code = at > 0 ? entry.slice(at + 1).trim() : '';
+    if (!parsed.address || code === '' || !validCode(code)) {
+      badCodes = true;
+      continue;
+    }
+    const key = addressKey(parsed.address);
+    if (codes.has(key) && codes.get(key) !== code) {
+      // Two codes for one address: neither is sent.
+      codes.set(key, '');
+      badCodes = true;
+      continue;
+    }
+    codes.set(key, code);
+  }
   const slides = [];
   const invalid = [];
   let dropped = 0;
   let local = false;
   let credentialsInHost = false;
-  let badCodes = false;
-  addresses.forEach((text, index) => {
+  addresses.forEach((text) => {
     if (text === '') {
       return;
     }
@@ -155,13 +177,7 @@ export function normalizeConfig(raw = {}) {
       dropped += 1;
       return;
     }
-    // The codes are given in the order of the addresses.
-    let code = codes[index] ?? '';
-    if (!validCode(code)) {
-      badCodes = true;
-      code = '';
-    }
-    slides.push({ key, address: parsed.address, code });
+    slides.push({ key, address: parsed.address, code: codes.get(key) ?? '' });
   });
   return {
     slides,

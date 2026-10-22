@@ -13,7 +13,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { LIMITS } from '../constants.js';
 
-const KNOWN = new Set(['realm', 'nonce', 'qop', 'opaque', 'algorithm']);
+const KNOWN = new Set(['realm', 'nonce', 'qop', 'opaque', 'algorithm', 'stale']);
 const SAFE = /^[\x20-\x21\x23-\x5b\x5d-\x7e]{0,256}$/;
 
 /**

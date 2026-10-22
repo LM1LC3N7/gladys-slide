@@ -62,6 +62,8 @@ export function reasonOf(err) {
       return { en: 'device code needed', fr: "code de l'appareil nécessaire" };
     case 'auth':
       return { en: `device code refused${http}`, fr: `code de l'appareil refusé${http}` };
+    case 'stale':
+      return { en: 'authentication challenge expired', fr: "défi d'authentification expiré" };
     case 'rate':
       return { en: 'too many requests (HTTP 429)', fr: 'trop de demandes (HTTP 429)' };
     case 'server':
@@ -97,8 +99,8 @@ function slideLine(name, state) {
       };
     case 'codeNeeded':
       return {
-        en: `${n}: this Slide (API v1) asks for its device code: type it in "Device codes", at the same place in the list as its address. Not tried again until then.`,
-        fr: `${n} : ce Slide (API v1) demande son code d'appareil : saisissez-le dans « Codes des appareils », à la même place dans la liste que son adresse. Pas de nouvel essai d'ici là.`,
+        en: `${n}: this Slide (API v1) asks for its device code: type "address=code" in "Device codes". Not tried again until then.`,
+        fr: `${n} : ce Slide (API v1) demande son code d'appareil : saisissez « adresse=code » dans « Codes des appareils ». Pas de nouvel essai d'ici là.`,
       };
     case 'blocked':
       return {
@@ -141,8 +143,8 @@ export const T = {
     fr: `8 Slides au plus : ${count} de plus ignoré(s).`,
   }),
   badCodes: {
-    en: 'A device code holds characters it cannot have, or is too long: ignored.',
-    fr: "Un code d'appareil contient des caractères impossibles ou est trop long : ignoré.",
+    en: 'An entry of "Device codes" is not an address=code pair (or gives two codes for one address, or a code with characters it cannot have): ignored, no code sent for it.',
+    fr: "Une entrée de « Codes des appareils » n'est pas un couple adresse=code (ou donne deux codes pour une adresse, ou un code aux caractères impossibles) : ignorée, aucun code envoyé pour elle.",
   },
   summary: (online, total, interval) => ({
     en: `${online} of ${total} Slides answer, read every ${interval} s.`,

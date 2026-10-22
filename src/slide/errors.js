@@ -18,6 +18,7 @@ export const KINDS = [
   'format', // an answer that is not one of a Slide
   'codeNeeded', // the Slide asks for its device code (API v1), none typed
   'auth', // the device code was refused
+  'stale', // the Digest challenge expired meanwhile (not a refusal of the code)
   'rate', // HTTP 429
   'server', // HTTP 5xx
   'http', // another HTTP status

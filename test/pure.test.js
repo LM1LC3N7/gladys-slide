@@ -38,10 +38,10 @@ test('addresses: IPv4, names, ports; URLs reduced; credentials, https and .local
   assert.deepEqual(parseHost(''), {});
 });
 
-test('the codes follow the order of the addresses; an empty place is a Slide on API v2', () => {
+test('review I2: the codes are address=code pairs, matched by address, never by order', () => {
   const config = normalizeConfig({
     slides: '192.168.1.40, 192.168.1.41 ;192.168.1.42',
-    device_codes: ', ABCD1234',
+    device_codes: ' http://192.168.1.41=ABCD1234, 10.9.9.9=ZZZZ0000',
   });
   assert.deepEqual(
     config.slides.map((s) => [s.key, s.code]),
@@ -52,9 +52,22 @@ test('the codes follow the order of the addresses; an empty place is a Slide on 
     ],
   );
   assert.equal(config.badCodes, false);
-  const bad = normalizeConfig({ slides: '1.1.1.1', device_codes: `AB\u0007CD` });
-  assert.equal(bad.badCodes, true);
-  assert.equal(bad.slides[0].code, '');
+  // An address removed, the codes left as they are: B keeps its own code.
+  const removed = normalizeConfig({
+    slides: '192.168.1.41',
+    device_codes: '192.168.1.40=AAAA1111, 192.168.1.41=BBBB2222',
+  });
+  assert.deepEqual(removed.slides[0].code, 'BBBB2222');
+  for (const codes of [
+    'AAAA1111, BBBB2222', // the old format, by order: refused
+    `1.1.1.1=AB\u0007CD`,
+    '1.1.1.1=',
+    '1.1.1.1=AAAA1111, 1.1.1.1=BBBB2222', // two codes for one address
+  ]) {
+    const bad = normalizeConfig({ slides: '1.1.1.1', device_codes: codes });
+    assert.equal(bad.badCodes, true, codes);
+    assert.equal(bad.slides[0].code, '', codes);
+  }
   const many = normalizeConfig({
     slides: Array.from({ length: 10 }, (_, i) => `10.0.0.${i + 1}`).join(','),
   });
@@ -72,8 +85,8 @@ test('the options: bounded interval, calibration only on a true, language', () =
   assert.equal(normalizeConfig({ allow_calibration: true }).allowCalibration, true);
   assert.equal(normalizeConfig({ language: 'de' }).language, 'fr');
   assert.notEqual(
-    connectionKey(normalizeConfig({ slides: '1.1.1.1', device_codes: 'A' })),
-    connectionKey(normalizeConfig({ slides: '1.1.1.1', device_codes: 'B' })),
+    connectionKey(normalizeConfig({ slides: '1.1.1.1', device_codes: '1.1.1.1=A' })),
+    connectionKey(normalizeConfig({ slides: '1.1.1.1', device_codes: '1.1.1.1=B' })),
   );
   assert.equal(
     connectionKey(normalizeConfig({ slides: '1.1.1.1', poll_interval: 10 })),
@@ -186,7 +199,7 @@ test('the state kept in /data: repaired, bounded, never a code', () => {
     { address: '1.1.1.1', until: now + TIMINGS.pauseMax, failures: 3 },
   ]);
   assert.equal(memory.blocks.length, 1);
-  assert.deepEqual(memory.slides, [{ address: '1.1.1.1', id: '300000000000' }]);
+  assert.deepEqual(memory.slides, [{ address: '1.1.1.1', id: '300000000000', readAt: 0 }]);
   const fp = fingerprintOf(memory.salt, '1.1.1.1', 'ABCD1234');
   assert.match(fp, /^[0-9a-f]{32}$/);
   assert.ok(!fp.includes('ABCD1234'));

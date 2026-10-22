@@ -233,7 +233,7 @@ test('STOP works before the first read after a restart (identity kept in /data)'
   const first = await setup(t, { store });
   await createAll(first.gladys);
   first.app.stop();
-  assert.deepEqual(store.data.slides, [{ address: A, id: MAC_A }]);
+  assert.deepEqual(store.data.slides, [{ address: A, id: MAC_A, readAt: first.clock.now() }]);
   const second = await setup(t, {
     store,
     read: false,
@@ -316,7 +316,7 @@ test('API v1: the device code answers the Digest challenge, never logged nor sto
   const slides = fakeSlides({ [A]: { mac: MAC_A, version: 1, code: CODE, pos: 1 } });
   const { gladys, logs, store } = await setup(t, {
     slides,
-    config: { slides: A, device_codes: CODE },
+    config: { slides: A, device_codes: `${A}=${CODE}` },
   });
   assert.equal(status(gladys).connected, true, status(gladys).message.en);
   await createAll(gladys);
@@ -338,7 +338,7 @@ test('a refused code stops that Slide for good, until another code or the Test b
     slides,
     clock,
     store,
-    config: { slides: `${A}, ${B}`, device_codes: 'WRONG123' },
+    config: { slides: `${A}, ${B}`, device_codes: `${A}=WRONG123` },
   });
   assert.match(status(gladys).message.en, /device code was refused/);
   assert.equal(status(gladys).connected, true, 'the other Slide answers');
@@ -357,7 +357,7 @@ test('a refused code stops that Slide for good, until another code or the Test b
   assert.equal(slides.paths(A).length, 2, 'probe + Digest');
   assert.equal(store.data.blocks[0].failures, 2);
   // Another code lifts it at once (a configuration saved).
-  await gladys.fake.configUpdated({ slides: `${A}, ${B}`, device_codes: CODE });
+  await gladys.fake.configUpdated({ slides: `${A}, ${B}`, device_codes: `${A}=${CODE}` });
   await app.tick({ scheduled: true });
   assert.deepEqual(store.data.blocks, []);
   assert.doesNotMatch(status(gladys).message.en, /refused/);

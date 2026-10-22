@@ -7,7 +7,8 @@
 //     with the salted fingerprint of the REFUSED code: final, never tried
 //     again by itself; another code lifts it (even typed while the container
 //     was stopped), the Test button tries once and lifts it on a success;
-//   - `slides`: per address, the identity (MAC) of the Slide last read there;
+//   - `slides`: per address, the identity (MAC) of the Slide last read there,
+//     and when (written at most once a minute: the status after a restart);
 //   - `lastAttemptAt`: when the Slides were last read (written at most once a
 //     minute: src/app.js waits that minute more after a restart).
 // NO SECRET: no device code, nor anything derived from a code a Slide
@@ -101,7 +102,12 @@ export function normalizeMemory(raw, now) {
     ),
     slides: byAddress(data.slides, (s) =>
       address(s.address) && typeof s.id === 'string' && /^[0-9a-f]{12}$/.test(s.id)
-        ? { address: s.address, id: s.id }
+        ? {
+            address: s.address,
+            id: s.id,
+            // When it was last read there (never in the future).
+            readAt: Number.isFinite(s.readAt) && s.readAt > 0 ? Math.min(s.readAt, now) : 0,
+          }
         : undefined,
     ),
     pauses: byAddress(data.pauses, (p) =>

@@ -32,7 +32,7 @@ export class SlideClient {
   }
 
   /** An answer of the Slide -> its JSON (null when empty), or the SlideError it carries. */
-  answer(res) {
+  answer(res, { authenticated = false } = {}) {
     const status = res.status;
     if (status === 429) {
       throw refused('rate', status, { retryAfter: retryAfterOf(res.headers?.['retry-after']) });
@@ -46,7 +46,9 @@ export class SlideClient {
       });
     }
     if (status === 401 || status === 403) {
-      throw refused('auth', status);
+      // A refusal of the code only when one was sent; otherwise something
+      // else than a Slide answers (review M4).
+      throw refused(authenticated ? 'auth' : 'http', status);
     }
     if (status < 200 || status >= 300) {
       throw refused('http', status);
@@ -67,9 +69,12 @@ export class SlideClient {
    * @param {{ address: { host: string, port: number }, code: string }} target
    * @param {string} path
    * @param {string|undefined} body JSON text
-   * @param {{ timeout: number, sendWithin?: number, beforeSend?: () => void }} options
+   * @param {{ timeout: number, sendWithin?: number, beforeSend?: () => void,
+   *   onChallenge?: () => void }} options
+   *   `onChallenge`: the first request was answered 401 with a challenge, so
+   *   it did nothing (a command may then still be cancelled before the second)
    */
-  async call(target, path, body, { timeout, sendWithin, beforeSend }) {
+  async call(target, path, body, { timeout, sendWithin, beforeSend, onChallenge }) {
     const start = this.now();
     const deadline = start + timeout;
     const sendBy = sendWithin === undefined ? undefined : start + sendWithin;
@@ -86,6 +91,7 @@ export class SlideClient {
       return this.answer(first);
     }
     // API v1: the Slide did nothing and asks for the device code.
+    onChallenge?.();
     const challenge = parseChallenge(first.headers?.['www-authenticate']);
     if (!challenge) {
       throw refused('format', 401);
@@ -111,9 +117,12 @@ export class SlideClient {
       sendWithin: sendBy === undefined ? undefined : sendBy - this.now(),
     });
     if (second.status === 401) {
-      throw refused('auth', 401);
+      // A new challenge marked stale: the nonce expired meanwhile, not the
+      // code refused (review M3): an ordinary failure, tried at the interval.
+      const again = parseChallenge(second.headers?.['www-authenticate']);
+      throw refused(again?.get('stale')?.toLowerCase() === 'true' ? 'stale' : 'auth', 401);
     }
-    return this.answer(second);
+    return this.answer(second, { authenticated: true });
   }
 
   /** GetInfo: the identity, the name and the position of the Slide (an object). */

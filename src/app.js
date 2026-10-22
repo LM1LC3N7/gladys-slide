@@ -91,6 +91,12 @@ const freshSlot = ({ key, address, code }) => ({
   reason: undefined,
   reading: undefined,
   readingSince: -Infinity,
+  /** When this Slide was last asked by a cycle (never sooner than the interval after). */
+  attemptAt: -Infinity,
+  /** When its last read was applied (its position is published while recent). */
+  readAt: undefined,
+  /** After a restart: when it was last read, kept in /data (the status until the first read). */
+  restoredAt: undefined,
 });
 
 export class SlideApp {
@@ -162,30 +168,51 @@ export class SlideApp {
     if (generation !== this.generation) {
       return;
     }
-    const previousKey = this.connKey;
+    const restart = this.connKey === undefined;
     this.config = normalizeConfig(raw);
     this.connKey = connectionKey(this.config);
-    this.slots = new Map(this.config.slides.map((s) => [s.key, freshSlot(s)]));
-    await this.tidyMemory();
-    // The Slide last read at each address: "Stop" works before the first read.
+    // A Slide whose address and code did not change keeps its slot (its last
+    // read, its failures): only the new or changed ones are read at once
+    // (review M5). After a restart, every slot starts from the last read kept
+    // in /data.
+    const previous = this.slots;
+    this.slots = new Map(
+      this.config.slides.map((s) => {
+        const kept = previous.get(s.key);
+        if (kept && kept.code === s.code) {
+          return [s.key, kept];
+        }
+        const slot = freshSlot(s);
+        if (restart) {
+          slot.attemptAt = this.lastAttemptAt;
+        }
+        return [s.key, slot];
+      }),
+    );
+    // The Slide last read at each address, attached before any await: "Stop"
+    // works before the first read, and during this start (review M1).
     for (const kept of this.memory.slides) {
       const slot = this.slots.get(kept.address);
-      if (slot) {
+      if (slot && !slot.id) {
         slot.id = kept.id;
+        slot.restoredAt = kept.readAt > 0 ? kept.readAt : undefined;
       }
+    }
+    await this.tidyMemory();
+    if (generation !== this.generation) {
+      return;
     }
     this.published = undefined;
     this.badges = undefined;
     this.lastStatus = undefined;
     this.publisher.start();
     await this.publishAll();
-    if (this.slots.size === 0) {
+    if (generation !== this.generation || this.slots.size === 0) {
       return;
     }
-    // New addresses or codes: read at once (a pause or a block still holds).
-    // Otherwise never sooner than the interval.
-    const changed = previousKey !== undefined && previousKey !== this.connKey;
-    this.schedule(changed ? 0 : undefined);
+    // New addresses or codes are due at once (a pause or a block still
+    // holds); the others never sooner than the interval.
+    this.schedule();
   }
 
   stop() {
@@ -290,6 +317,11 @@ export class SlideApp {
     return this.config.pollInterval * SECOND;
   }
 
+  /** How long a read stays recent: two intervals and a minute. */
+  freshFor() {
+    return 2 * this.interval + TIMINGS.attemptPersistEvery;
+  }
+
   pauseOf(slot) {
     const pause = this.memory?.pauses.find((p) => p.address === slot.key);
     return pause && this.now() < pause.until ? pause : undefined;
@@ -368,10 +400,34 @@ export class SlideApp {
     return undefined;
   }
 
-  /** The next cycle of reads: the interval after the last one. */
+  /**
+   * When the next cycle has something to read: the earliest of the Slides
+   * (the interval after its last read, the end of its pause, its next try);
+   * a blocked Slide waits for nothing; all blocked: an interval from now
+   * (review B1: never a cycle that reads nothing at 0 ms, again and again).
+   */
+  nextCycleAt() {
+    let next = Infinity;
+    for (const slot of this.slots.values()) {
+      if (this.blockOf(slot)) {
+        continue;
+      }
+      const pause = this.pauseOf(slot);
+      let at = slot.attemptAt + this.interval;
+      if (pause) {
+        at = pause.until;
+      } else if (slot.online === false) {
+        at = Math.max(at, slot.nextRetryAt);
+      }
+      next = Math.min(next, at);
+    }
+    return next === Infinity ? this.now() + this.interval : next;
+  }
+
+  /** The next cycle of reads. */
   schedule(delay) {
     this.clearTimer();
-    const wait = delay ?? this.lastAttemptAt + this.interval - this.now();
+    const wait = delay ?? this.nextCycleAt() - this.now();
     const generation = this.generation;
     this.timer = this.timers.setTimeout(
       () => {
@@ -407,7 +463,11 @@ export class SlideApp {
     if (this.blockOf(slot) && !trial) {
       return false;
     }
-    return trial || slot.online !== false || this.now() >= slot.nextRetryAt;
+    if (trial) {
+      return true;
+    }
+    const at = slot.attemptAt + this.interval;
+    return this.now() >= (slot.online === false ? Math.max(at, slot.nextRetryAt) : at);
   }
 
   async run({ scheduled = false, trial = false } = {}) {
@@ -425,10 +485,15 @@ export class SlideApp {
     }
     // Whatever happens below, the next cycle is scheduled: the chain of reads
     // never dies on an error (a value not understood, a publication failing).
+    let read = false;
     try {
       const due = [...this.slots.values()].filter((slot) => this.due(slot, trial));
       if (due.length > 0) {
+        read = true;
         // Written BEFORE the reads: a restart in the middle never reads sooner.
+        for (const slot of due) {
+          slot.attemptAt = now;
+        }
         await this.noteAttempt(now);
         if (generation !== this.generation) {
           return;
@@ -444,7 +509,9 @@ export class SlideApp {
       this.logger.error(`Refresh failed: ${err?.message ?? 'error'}`);
     } finally {
       if (generation === this.generation) {
-        this.schedule();
+        // A cycle that read nothing never comes back at once.
+        const wait = this.nextCycleAt() - this.now();
+        this.schedule(read ? wait : Math.max(wait, SECOND));
       }
     }
   }
@@ -511,6 +578,10 @@ export class SlideApp {
    */
   async applyRead(slot, json, startedAt) {
     const generation = this.generation;
+    if (this.slots.get(slot.key) !== slot) {
+      // A slot of a replaced configuration (a command answered late): nothing.
+      return;
+    }
     const info = infoOf(json);
     slot.online = true;
     slot.failures = 0;
@@ -537,11 +608,14 @@ export class SlideApp {
     }
     slot.id = info.id;
     slot.info = info;
+    // The identity at the address, and when it was last read (the status
+    // after a restart, review M2): written at most once a minute.
     const kept = this.memory.slides.find((s) => s.address === slot.key);
-    if (kept?.id !== info.id) {
+    const now = this.now();
+    if (kept?.id !== info.id || now - (kept.readAt ?? 0) >= TIMINGS.attemptPersistEvery) {
       this.memory.slides = [
         ...this.memory.slides.filter((s) => s.address !== slot.key && s.id !== info.id),
-        { address: slot.key, id: info.id },
+        { address: slot.key, id: info.id, readAt: now },
       ];
       await this.saveMemory();
       if (generation !== this.generation) {
@@ -557,6 +631,7 @@ export class SlideApp {
     }
     const id = info.id;
     this.positions.set(id, info.position);
+    slot.readAt = this.now();
     const target = this.targets.get(id);
     if (target === undefined) {
       // No move waits for a confirmation: a STOP or a calibration is
@@ -575,6 +650,9 @@ export class SlideApp {
 
   /** A failed read. */
   async readFailed(slot, err) {
+    if (this.slots.get(slot.key) !== slot) {
+      return;
+    }
     slot.online = false;
     slot.error = err?.kind ?? 'error';
     slot.reason = reasonOf(err);
@@ -613,6 +691,11 @@ export class SlideApp {
       };
     }
     if (slot.online === undefined) {
+      // After a restart: answered recently (kept in /data), so still taken as
+      // connected until the first read (review M2).
+      if (slot.restoredAt !== undefined && this.now() - slot.restoredAt < this.freshFor()) {
+        return { kind: 'ok', position: undefined };
+      }
       return { kind: 'connecting' };
     }
     if (slot.online) {
@@ -780,6 +863,19 @@ export class SlideApp {
   /** The last positions, for the created features only (the ack never waits for it). */
   queueStates(created = this.createdFeatures()) {
     for (const [id, position] of this.positions) {
+      // Only a position read recently from a Slide that answers: never an old
+      // one dated anew by the heartbeat (review I4); the badge says the rest.
+      const slot = this.slotOf(id);
+      if (
+        !slot ||
+        slot.online !== true ||
+        this.blockOf(slot) ||
+        this.pauseOf(slot) ||
+        slot.readAt === undefined ||
+        this.now() - slot.readAt > this.freshFor()
+      ) {
+        continue;
+      }
       const featureId = slideIds(this.gladys, id).feature(FEATURES.POSITION);
       if (created.has(featureId)) {
         this.publisher.push(featureId, { state: position });
@@ -990,7 +1086,7 @@ export class SlideApp {
         timeout: Math.min(left(), TIMINGS.readTimeout),
       });
     } catch (err) {
-      if (ticket.generation !== this.generation) {
+      if (this.stale(slot, ticket.generation)) {
         throw this.refusal(ERRORS.unknownDevice);
       }
       if (AUTH_KINDS.has(err?.kind)) {
@@ -1032,6 +1128,11 @@ export class SlideApp {
         ticket.sent = true;
         this.lastSentAt.set(id, this.now());
       },
+      // API v1: the first request was answered 401 with a challenge, so it
+      // did nothing: a STOP arriving now still cancels this move (review I1).
+      onChallenge: () => {
+        ticket.sent = false;
+      },
     };
     const request =
       plan.kind === 'move'
@@ -1044,33 +1145,42 @@ export class SlideApp {
       if (err.beforeSend) {
         throw err;
       }
-      throw await this.commandFailed(slot, id, name, err, plan);
+      throw await this.commandFailed(slot, id, name, err, { plan, generation: ticket.generation });
     } finally {
       if (this.inFlight.get(id) === request) {
         this.inFlight.delete(id);
       }
     }
     this.logger.info(`${name} sent`);
+    if (this.stale(slot, ticket.generation)) {
+      // Answered after the configuration changed: nothing of the old one.
+      return;
+    }
     this.notReached.delete(id);
     if (plan.kind === 'move') {
       this.targets.set(id, plan.position);
     } else {
       this.targets.delete(id);
     }
-    this.followUp(slot, id);
+    this.followUp(slot, id, ticket.generation);
   }
 
   /** The refusal of a command that failed after it was planned. */
-  async commandFailed(slot, id, name, err, plan) {
+  async commandFailed(slot, id, name, err, { plan, generation }) {
     const reason = reasonOf(err);
     if (!err?.sent && !err?.answered) {
       this.logger.warn(`${name} NOT sent (${reason.en})`);
       return this.refusal(err?.kind === 'late' ? ERRORS.tooSlow : ERRORS.notSent(reason));
     }
+    if (this.stale(slot, generation)) {
+      // Answered after the configuration changed: told as it is, but nothing
+      // of the old configuration is paused, read or written (review I3).
+      return this.refusal(err.answered ? ERRORS.refused(reason) : ERRORS.sentUnconfirmed(reason));
+    }
     if (PAUSE_KINDS.has(err?.kind)) {
       await this.pause(slot, err);
     }
-    this.followUp(slot, id);
+    this.followUp(slot, id, generation);
     if (err.answered) {
       // The Slide answered with a refusal: nothing done. Never a block from a
       // command (the reads decide that).
@@ -1096,10 +1206,12 @@ export class SlideApp {
    * a move leaving meanwhile is followed by a second STOP.
    */
   async stopNow(id, received) {
+    // Every move of that Slide is cancelled: one not sent yet never leaves,
+    // and one whose first request was only the probe of API v1 (answered 401,
+    // nothing done) never sends its authenticated request (review I1). A
+    // request already written is not undone: a second STOP follows it.
     for (const pending of this.tickets.get(id) ?? []) {
-      if (!pending.sent) {
-        pending.cancelled = true;
-      }
+      pending.cancelled = true;
     }
     this.targets.delete(id);
     this.notReached.delete(id);
@@ -1107,6 +1219,7 @@ export class SlideApp {
     if (!slot) {
       throw this.refusal(ERRORS.unknownDevice);
     }
+    const generation = this.generation;
     const leaving = this.inFlight.get(id);
     const sendBy = received + TIMINGS.commandSendBy;
     const answerBy = received + TIMINGS.commandAnswerBy;
@@ -1120,13 +1233,18 @@ export class SlideApp {
       if (leaving) {
         this.reaffirmStop(slot, id, leaving);
       }
-      throw await this.commandFailed(slot, id, `Slide ${id}: stop`, err);
+      throw await this.commandFailed(slot, id, `Slide ${id}: stop`, err, { generation });
     }
     this.logger.info(`Slide ${id}: stop sent`);
     if (leaving) {
       this.reaffirmStop(slot, id, leaving);
     }
-    this.followUp(slot, id);
+    this.followUp(slot, id, generation);
+  }
+
+  /** Whether a slot belongs to a replaced configuration (or `generation` is an old one). */
+  stale(slot, generation) {
+    return generation !== this.generation || this.slots.get(slot.key) !== slot;
   }
 
   /** A move was leaving when the STOP came: once it is answered, STOP again (one try). */
@@ -1135,7 +1253,7 @@ export class SlideApp {
     Promise.resolve(leaving)
       .catch(() => {})
       .then(async () => {
-        if (generation !== this.generation || this.slots.get(slot.key) !== slot) {
+        if (this.stale(slot, generation)) {
           return;
         }
         try {
@@ -1147,7 +1265,7 @@ export class SlideApp {
         } catch (err) {
           this.logger.warn(`Slide ${id}: second stop failed (${reasonOf(err).en})`);
         }
-        this.followUp(slot, id);
+        this.followUp(slot, id, generation);
       });
   }
 
@@ -1156,8 +1274,10 @@ export class SlideApp {
    * per Slide (a new command replaces it). After the last one, a position
    * asked and not read is shown on the badge.
    */
-  followUp(slot, id) {
-    const generation = this.generation;
+  followUp(slot, id, generation = this.generation) {
+    if (this.stale(slot, generation)) {
+      return;
+    }
     for (const handle of this.followUps.get(id) ?? []) {
       this.timers.clearTimeout(handle);
     }
@@ -1167,12 +1287,12 @@ export class SlideApp {
       const last = index === TIMINGS.followUps.length - 1;
       const handle = this.timers.setTimeout(() => {
         handles.delete(handle);
-        if (generation !== this.generation || this.pauseOf(slot) || this.blockOf(slot)) {
+        if (this.stale(slot, generation) || this.pauseOf(slot) || this.blockOf(slot)) {
           return;
         }
         this.readSlot(slot, generation)
           .then(async () => {
-            if (generation !== this.generation) {
+            if (this.stale(slot, generation)) {
               return;
             }
             if (last && this.targets.has(id)) {
