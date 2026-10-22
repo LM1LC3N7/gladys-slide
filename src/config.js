@@ -1,45 +1,180 @@
 // -----------------------------------------------------------------------------
-// Integration configuration.
-//
-// The configuration is filled in by the user in Gladys, from the `config_schema`
-// declared in `gladys-assistant-integration.json`. The SDK fetches it for you
-// (`gladys.getConfig()`) and notifies you of every change through
-// `gladys.onConfigUpdated()`.
-//
-// This module only provides defaults and normalizes the received object, so the
-// rest of the code never has to deal with `undefined`.
+// The configuration: the manifest `config_schema` values, normalized so the
+// rest of the code never deals with strings typed in a form. The device codes
+// are kept here only: never logged, never in /data (only the salted
+// fingerprint of a code a Slide REFUSED, see src/store.js), never in a status
+// or an error.
 // -----------------------------------------------------------------------------
 
-// Defaults: they MUST stay consistent with the `default` values declared in the
-// `config_schema` of the manifest.
+import { LIMITS, MAX_SLIDES, POLL_INTERVAL } from './constants.js';
+
+/** Defaults, mirrored by the manifest (checked by test/manifest.test.js). */
 export const DEFAULT_CONFIG = {
-  latitude: 48.8566, // Paris
-  longitude: 2.3522,
-  unit: 'celsius', // 'celsius' | 'fahrenheit'
-  // Seconds between two reads of the polled sensors. Gladys polls at most once
-  // a minute: slower intervals are applied by skipping polls (see
-  // createPoller in src/devices/index.js).
-  poll_frequency: 300,
-  // Reserved key (NOT in config_schema): because the manifest declares both
-  // 'local' and 'cloud' in its `transports` field, Gladys shows a standard
-  // "Prefer the local connection" toggle and sends the user's choice here.
-  // Read-only for the integration; defaults to true.
-  GLADYS_PREFER_LOCAL: true,
+  slides: '',
+  poll_interval: POLL_INTERVAL.default,
+  allow_calibration: false,
+  language: 'fr',
 };
 
+/** The optional fields without a default in the manifest (the codes are a secret). */
+const OPTIONAL = { device_codes: '' };
+
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+/** A text read from the Slide, without control characters, trimmed and cut. */
+export function cleanText(value, max) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  let out = '';
+  for (const char of value.slice(0, max * 2)) {
+    const code = char.codePointAt(0);
+    if (code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) {
+      out += char;
+    }
+  }
+  return out.trim().slice(0, max);
+}
+
 /**
- * Merge the user config with the defaults.
- * @param {Record<string, unknown>} raw config returned by the SDK
+ * One address typed by the user: an IPv4 address or a host name, with an
+ * optional port. A pasted URL ("http://192.168.1.40/rpc/Slide.GetInfo") is
+ * reduced to its host. Credentials in it ("user:pass@host") are refused and
+ * never shown; names in .local are refused (mDNS does not resolve in the
+ * container).
+ * @returns {{ address?: { host: string, port: number }, invalid?: string, credentials?: boolean, local?: boolean }}
+ */
+export function parseHost(raw) {
+  let text = String(raw ?? '').trim();
+  if (text === '') {
+    return {};
+  }
+  if (text.includes('@')) {
+    return { credentials: true };
+  }
+  if (text.length > 260) {
+    return { invalid: `${text.slice(0, 40)}…` };
+  }
+  const shown = text.slice(0, 60);
+  if (/^https:\/\//i.test(text)) {
+    // The local API answers in plain HTTP only.
+    return { invalid: shown };
+  }
+  text = text.replace(/^http:\/\//i, '').replace(/[/?#].*$/, '');
+  const match = /^([^:]+)(?::(\d{1,5}))?$/.exec(text.toLowerCase());
+  if (!match) {
+    return { invalid: shown };
+  }
+  const [, host, portText] = match;
+  const port = portText === undefined ? 80 : Number(portText);
+  if (port < 1 || port > 65535 || host.length > 253) {
+    return { invalid: shown };
+  }
+  if (/\.local\.?$/.test(host)) {
+    return { local: true, invalid: shown };
+  }
+  const valid =
+    IPV4.test(host) || (!/^[\d.]+$/.test(host) && host.split('.').every((l) => LABEL.test(l)));
+  return valid ? { address: { host, port } } : { invalid: shown };
+}
+
+/** `host` or `host:port` (port 80 left out): the key of a Slide in /data and in the statuses. */
+export const addressKey = (address) =>
+  address ? (address.port === 80 ? address.host : `${address.host}:${address.port}`) : '';
+
+/** Only `true` (or the text "true") allows: anything else, missing included, refuses. */
+const strictTrue = (value) => value === true || value === 'true';
+
+/** A number typed in the form: a finite number, or undefined ('' and null are not 0). */
+export function numberOf(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string' && /^\s*-?\d{1,6}(\.\d{1,6})?\s*$/.test(value)) {
+    return Number(value);
+  }
+  return undefined;
+}
+
+const bounded = (value, { default: fallback, min, max }) => {
+  const number = numberOf(value);
+  return number === undefined ? fallback : Math.min(max, Math.max(min, Math.round(number)));
+};
+
+/** No control character, no comma, not too long: what a device code may hold. */
+const validCode = (code) =>
+  code.length <= LIMITS.code &&
+  [...code].every((c) => c.codePointAt(0) >= 0x20 && c.codePointAt(0) !== 0x7f);
+
+/** A list typed in a form: comma (or semicolon) separated, entries trimmed, empties kept. */
+const splitList = (text) => (text.trim() === '' ? [] : text.split(/[,;]/).map((s) => s.trim()));
+
+/**
+ * @returns {{
+ *   slides: { key: string, address: { host: string, port: number }, code: string }[],
+ *   invalid: string[], dropped: number, local: boolean, credentialsInHost: boolean,
+ *   badCodes: boolean, pollInterval: number, allowCalibration: boolean,
+ *   language: 'fr'|'en' }}
+ *   `code` is '' when none was typed for that Slide (API v2).
  */
 export function normalizeConfig(raw = {}) {
+  const c = { ...DEFAULT_CONFIG, ...OPTIONAL };
+  for (const [key, value] of Object.entries(raw ?? {})) {
+    if (Object.hasOwn(c, key) && value != null) {
+      c[key] = value;
+    }
+  }
+  const addresses = splitList(typeof c.slides === 'string' ? c.slides : '');
+  const codes = splitList(typeof c.device_codes === 'string' ? c.device_codes : '');
+  const slides = [];
+  const invalid = [];
+  let dropped = 0;
+  let local = false;
+  let credentialsInHost = false;
+  let badCodes = false;
+  addresses.forEach((text, index) => {
+    if (text === '') {
+      return;
+    }
+    const parsed = parseHost(text);
+    if (parsed.credentials) {
+      credentialsInHost = true;
+      return;
+    }
+    if (!parsed.address) {
+      local ||= Boolean(parsed.local);
+      invalid.push(parsed.invalid ?? text.slice(0, 60));
+      return;
+    }
+    const key = addressKey(parsed.address);
+    if (slides.some((s) => s.key === key)) {
+      return;
+    }
+    if (slides.length >= MAX_SLIDES) {
+      dropped += 1;
+      return;
+    }
+    // The codes are given in the order of the addresses.
+    let code = codes[index] ?? '';
+    if (!validCode(code)) {
+      badCodes = true;
+      code = '';
+    }
+    slides.push({ key, address: parsed.address, code });
+  });
   return {
-    ...DEFAULT_CONFIG,
-    ...raw,
-    // Force the types: config may arrive as strings from a form.
-    latitude: Number(raw.latitude ?? DEFAULT_CONFIG.latitude),
-    longitude: Number(raw.longitude ?? DEFAULT_CONFIG.longitude),
-    poll_frequency: Number(raw.poll_frequency ?? DEFAULT_CONFIG.poll_frequency),
-    // The preference is a boolean; anything but an explicit false means true.
-    GLADYS_PREFER_LOCAL: raw.GLADYS_PREFER_LOCAL !== false,
+    slides,
+    invalid,
+    dropped,
+    local,
+    credentialsInHost,
+    badCodes,
+    pollInterval: bounded(c.poll_interval, POLL_INTERVAL),
+    allowCalibration: strictTrue(c.allow_calibration),
+    language: c.language === 'en' ? 'en' : 'fr',
   };
 }
+
+/** What the reads depend on: a change of any of these starts over (compared in memory only). */
+export const connectionKey = (config) => JSON.stringify(config.slides.map((s) => [s.key, s.code]));
