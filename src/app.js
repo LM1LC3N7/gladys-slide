@@ -1153,16 +1153,7 @@ export class SlideApp {
       // API v1: the first request was answered 401 with a challenge, so it
       // did nothing: a STOP arriving now still cancels this move (review I1),
       // and it does not count as a move that left.
-      onChallenge: () => {
-        ticket.sent = false;
-        if (this.sentMoveSeq.get(id) === ticket.seq) {
-          if (ticket.previousSent === undefined) {
-            this.sentMoveSeq.delete(id);
-          } else {
-            this.sentMoveSeq.set(id, ticket.previousSent);
-          }
-        }
-      },
+      onChallenge: () => this.unsend(ticket),
     };
     const request =
       plan.kind === 'move'
@@ -1200,9 +1191,30 @@ export class SlideApp {
     this.followUp(slot, id, ticket.generation);
   }
 
+  /**
+   * A move whose request was written but did nothing (the 401 probe of API v1,
+   * or a refusal answered by the Slide: 429, another 4xx, a redirect, a code
+   * refused, a stale challenge): it no longer counts as a move that left, so
+   * it never holds a second STOP back (reviews 3 and 4). A move "sent,
+   * without confirmation" keeps its number.
+   */
+  unsend(ticket) {
+    ticket.sent = false;
+    if (this.sentMoveSeq.get(ticket.id) === ticket.seq) {
+      if (ticket.previousSent === undefined) {
+        this.sentMoveSeq.delete(ticket.id);
+      } else {
+        this.sentMoveSeq.set(ticket.id, ticket.previousSent);
+      }
+    }
+  }
+
   /** The refusal of a command that failed after it was planned. */
   async commandFailed(slot, id, name, err, { plan, ticket, generation }) {
     const reason = reasonOf(err);
+    if (ticket && err?.answered) {
+      this.unsend(ticket);
+    }
     if (!err?.sent && !err?.answered) {
       this.logger.warn(`${name} NOT sent (${reason.en})`);
       return this.refusal(err?.kind === 'late' ? ERRORS.tooSlow : ERRORS.notSent(reason));
@@ -1294,10 +1306,13 @@ export class SlideApp {
    * (one try), unless a move of that Slide asked after the STOP has LEFT: the
    * user wants it, the second STOP would stop it (approval m1). A newer move
    * still waiting is awaited first: left -> no second STOP; refused or not
-   * sent -> the second STOP goes (review 3: in doubt, STOP).
+   * sent -> the second STOP goes (review 3: in doubt, STOP). That wait lasts
+   * about 4 s at most (each newer move is sent within 3.5 s of its click or
+   * refused, answered by 4.3 s). The Slide is then found again by its
+   * identity: a configuration changed meanwhile for another Slide never
+   * drops this STOP (review 4).
    */
-  reaffirmStop(slot, id, leaving, stopSeq) {
-    const generation = this.generation;
+  reaffirmStop(_slot, id, leaving, stopSeq) {
     const newer = () => (this.sentMoveSeq.get(id) ?? 0) > stopSeq;
     const waiting = () =>
       [...(this.tickets.get(id) ?? [])]
@@ -1310,7 +1325,9 @@ export class SlideApp {
         for (let list = waiting(); list.length > 0 && !newer(); list = waiting()) {
           await Promise.all(list);
         }
-        if (this.stale(slot, generation)) {
+        const slot = this.slotOf(id);
+        if (!slot) {
+          // That Slide is at no address of the configuration any more.
           return;
         }
         if (newer()) {
@@ -1337,7 +1354,7 @@ export class SlideApp {
           }
           this.logger.warn(`Slide ${id}: second stop failed (${reasonOf(err).en})`);
         }
-        this.followUp(slot, id, generation);
+        this.followUp(slot, id);
       });
   }
 

@@ -131,7 +131,10 @@ test('m3: a configuration changed meanwhile is said so, not "at no address"', as
  * A request whose first SetPos is written then held (move 1 in flight), the
  * STOPs counted, and the identity reads after it failing when `failInfo`.
  */
-function heldFirstMove(slides, { failInfo = false, slowSecondStop = false } = {}) {
+function heldFirstMove(
+  slides,
+  { failInfo = false, slowSecondStop = false, refuseLaterMoves = false } = {},
+) {
   const state = { gate: undefined, stops: 0, order: [] };
   state.request = async (req) => {
     if (req.path === '/rpc/Slide.SetPos' && state.gate === undefined) {
@@ -147,6 +150,12 @@ function heldFirstMove(slides, { failInfo = false, slowSecondStop = false } = {}
       if (slowSecondStop && state.stops === 2) {
         await new Promise((r) => setTimeout(r, 30));
       }
+    }
+    if (refuseLaterMoves && req.path === '/rpc/Slide.SetPos') {
+      // Written, then refused by the Slide: nothing done.
+      req.beforeSend?.();
+      state.order.push('SetPos#2 refused');
+      return { status: 429, headers: {}, body: Buffer.alloc(0) };
     }
     if (failInfo && req.path === '/rpc/Slide.GetInfo' && state.gate !== undefined) {
       throw new SlideError('unreachable', { sent: false });
@@ -193,4 +202,23 @@ test('review 3 (R2): the second STOP never lands after the SetPos of a move sent
   assert.equal(ack2.success, true, ack2.error);
   assert.equal(held.order.at(-1), 'SetPos#2', held.order.join(' | '));
   assert.equal(slides.slide(A).pos, 0, 'the curtain opens as asked last');
+});
+
+test('review 4 (R6): a move written after the STOP but refused by the Slide does not skip the second STOP', async (t) => {
+  const slides = fakeSlides({ [A]: { mac: MAC_A, pos: 0.5 } });
+  const held = heldFirstMove(slides, { refuseLaterMoves: true });
+  const { gladys } = await setup(t, { slides, request: held.request });
+  const move1 = press(gladys, MAC_A, 'state', -1);
+  for (let i = 0; i < 10 && held.gate === undefined; i += 1) await flush();
+  assert.equal((await press(gladys, MAC_A, 'state', 0)).success, true);
+  const move2 = press(gladys, MAC_A, 'state', 1); // written, answered 429
+  await flush();
+  held.gate();
+  await move1;
+  const ack2 = await move2;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ack2.success, false);
+  assert.match(ack2.error, /refusé la commande/);
+  assert.ok(held.order.includes('SetPos#2 refused'));
+  assert.equal(held.stops, 2, 'move 1 is stopped again');
 });
