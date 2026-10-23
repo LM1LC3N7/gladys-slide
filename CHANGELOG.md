@@ -14,8 +14,9 @@ the notes of the version's GitHub Release.
 
 - The second STOP sent after a move that was leaving is no longer sent when a
   move of that Slide asked after the STOP has actually left (it would have
-  stopped it); a newer move still waiting is awaited first, and one refused or
-  never sent does not hold the second STOP back.
+  stopped it); a newer move still waiting is awaited first (about 4 s at
+  most), and one refused (before leaving, or answered with a refusal by the
+  Slide) or never sent does not hold the second STOP back.
 - A move answered after a STOP no longer leaves a "position not reached" badge.
 - A command refused because the configuration changed meanwhile says so,
   instead of "this Slide is not at any address".
