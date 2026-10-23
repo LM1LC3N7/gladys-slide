@@ -10,6 +10,14 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- The second STOP sent after a move that was leaving is no longer sent when a
+  move of that Slide was asked after the STOP (it would have stopped it).
+- A move answered after a STOP no longer leaves a "position not reached" badge.
+- A command refused because the configuration changed meanwhile says so,
+  instead of "this Slide is not at any address".
+
 ## [0.1.1] - 2026-10-22
 
 ### Added

@@ -206,6 +206,10 @@ export const ERRORS = {
     en: 'The device code of this Slide was refused: fix it in the configuration. Command not sent.',
     fr: "Le code d'appareil de ce Slide a été refusé : corrigez-le dans la configuration. Commande non envoyée.",
   },
+  configChanged: {
+    en: 'The configuration changed meanwhile: command not sent, try again.',
+    fr: 'La configuration a changé entre-temps : commande non envoyée, réessayez.',
+  },
   stopped: {
     en: 'A stop of this Slide arrived meanwhile: this command is dropped, not sent.',
     fr: 'Un arrêt de ce Slide est arrivé entre-temps : cette commande est abandonnée, non envoyée.',

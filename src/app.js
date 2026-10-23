@@ -140,6 +140,9 @@ export class SlideApp {
     this.tickets = new Map();
     /** Slide id -> the move between its first byte and its answer */
     this.inFlight = new Map();
+    /** Commands numbered on arrival; Slide id -> number of its last move asked */
+    this.commandSeq = 0;
+    this.lastMoveSeq = new Map();
     /** Slide id -> when its last command left: a read begun before is not applied */
     this.lastSentAt = new Map();
     /** device external id -> device published in this run (a publication never shrinks) */
@@ -1032,6 +1035,10 @@ export class SlideApp {
     if (!this.memory || !slot) {
       throw this.refusal(ERRORS.unknownDevice);
     }
+    // Numbered on arrival: a second STOP never stops a move asked after the
+    // STOP it repeats (approval m1).
+    this.commandSeq += 1;
+    this.lastMoveSeq.set(target.id, this.commandSeq);
     const ticket = { id: target.id, plan, generation: this.generation, cancelled: false };
     if (!this.tickets.has(target.id)) {
       this.tickets.set(target.id, new Set());
@@ -1049,9 +1056,9 @@ export class SlideApp {
     if (ticket.cancelled) {
       throw this.refusal(ERRORS.stopped);
     }
-    if (ticket.generation !== this.generation || this.slots.get(slot.key) !== slot) {
+    if (this.stale(slot, ticket.generation)) {
       // New addresses or codes since: nothing for the old ones.
-      throw this.refusal(ERRORS.unknownDevice);
+      throw this.refusal(this.staleRefusal(slot));
     }
     if (ticket.plan.kind === 'calibrate' && !this.config.allowCalibration) {
       throw this.refusal(ERRORS.calibrationDisabled);
@@ -1087,7 +1094,7 @@ export class SlideApp {
       });
     } catch (err) {
       if (this.stale(slot, ticket.generation)) {
-        throw this.refusal(ERRORS.unknownDevice);
+        throw this.refusal(this.staleRefusal(slot));
       }
       if (AUTH_KINDS.has(err?.kind)) {
         await this.block(slot, err.kind);
@@ -1145,7 +1152,11 @@ export class SlideApp {
       if (err.beforeSend) {
         throw err;
       }
-      throw await this.commandFailed(slot, id, name, err, { plan, generation: ticket.generation });
+      throw await this.commandFailed(slot, id, name, err, {
+        plan,
+        ticket,
+        generation: ticket.generation,
+      });
     } finally {
       if (this.inFlight.get(id) === request) {
         this.inFlight.delete(id);
@@ -1157,16 +1168,17 @@ export class SlideApp {
       return;
     }
     this.notReached.delete(id);
-    if (plan.kind === 'move') {
+    if (plan.kind === 'move' && !ticket.cancelled) {
       this.targets.set(id, plan.position);
     } else {
+      // A STOP came meanwhile: no position to wait for (approval m2).
       this.targets.delete(id);
     }
     this.followUp(slot, id, ticket.generation);
   }
 
   /** The refusal of a command that failed after it was planned. */
-  async commandFailed(slot, id, name, err, { plan, generation }) {
+  async commandFailed(slot, id, name, err, { plan, ticket, generation }) {
     const reason = reasonOf(err);
     if (!err?.sent && !err?.answered) {
       this.logger.warn(`${name} NOT sent (${reason.en})`);
@@ -1190,7 +1202,7 @@ export class SlideApp {
     // A silence, a dropped connection, a 5xx, an answer not understood: it
     // may have been done: confirmed only by a read of the position asked.
     this.unconfirmed.add(id);
-    if (plan?.kind === 'move') {
+    if (plan?.kind === 'move' && !ticket?.cancelled) {
       this.targets.set(id, plan.position);
     }
     this.badges = undefined;
@@ -1220,6 +1232,8 @@ export class SlideApp {
       throw this.refusal(ERRORS.unknownDevice);
     }
     const generation = this.generation;
+    this.commandSeq += 1;
+    const stopSeq = this.commandSeq;
     const leaving = this.inFlight.get(id);
     const sendBy = received + TIMINGS.commandSendBy;
     const answerBy = received + TIMINGS.commandAnswerBy;
@@ -1231,15 +1245,20 @@ export class SlideApp {
       });
     } catch (err) {
       if (leaving) {
-        this.reaffirmStop(slot, id, leaving);
+        this.reaffirmStop(slot, id, leaving, stopSeq);
       }
       throw await this.commandFailed(slot, id, `Slide ${id}: stop`, err, { generation });
     }
     this.logger.info(`Slide ${id}: stop sent`);
     if (leaving) {
-      this.reaffirmStop(slot, id, leaving);
+      this.reaffirmStop(slot, id, leaving, stopSeq);
     }
     this.followUp(slot, id, generation);
+  }
+
+  /** The refusal of a command whose configuration changed meanwhile (approval m3). */
+  staleRefusal(slot) {
+    return this.slots.get(slot.key) === slot ? ERRORS.configChanged : ERRORS.unknownDevice;
   }
 
   /** Whether a slot belongs to a replaced configuration (or `generation` is an old one). */
@@ -1247,22 +1266,42 @@ export class SlideApp {
     return generation !== this.generation || this.slots.get(slot.key) !== slot;
   }
 
-  /** A move was leaving when the STOP came: once it is answered, STOP again (one try). */
-  reaffirmStop(slot, id, leaving) {
+  /**
+   * A move was leaving when the STOP came: once it is answered, STOP again
+   * (one try), unless a move of that Slide was asked after the STOP: the
+   * user wants it, the second STOP would stop it (approval m1).
+   */
+  reaffirmStop(slot, id, leaving, stopSeq) {
     const generation = this.generation;
+    const newer = () => (this.lastMoveSeq.get(id) ?? 0) > stopSeq;
     Promise.resolve(leaving)
       .catch(() => {})
       .then(async () => {
         if (this.stale(slot, generation)) {
           return;
         }
+        if (newer()) {
+          this.logger.info(`Slide ${id}: second stop not sent, a move was asked after the stop`);
+          return;
+        }
         try {
           await this.client.stop(this.target(slot), {
             timeout: TIMINGS.commandAnswerBy,
-            beforeSend: () => this.lastSentAt.set(id, this.now()),
+            beforeSend: () => {
+              if (newer()) {
+                const skipped = new Error('a move was asked after the stop');
+                skipped.skipped = true;
+                throw skipped;
+              }
+              this.lastSentAt.set(id, this.now());
+            },
           });
           this.logger.info(`Slide ${id}: stop sent again after a move that was leaving`);
         } catch (err) {
+          if (err?.skipped) {
+            this.logger.info(`Slide ${id}: second stop not sent, a move was asked after the stop`);
+            return;
+          }
           this.logger.warn(`Slide ${id}: second stop failed (${reasonOf(err).en})`);
         }
         this.followUp(slot, id, generation);
