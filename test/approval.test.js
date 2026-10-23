@@ -10,6 +10,7 @@ import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
 import { SlideApp } from '../src/app.js';
 import { registerHandlers } from '../src/handlers.js';
 import { SlideClient } from '../src/slide/client.js';
+import { SlideError } from '../src/slide/errors.js';
 import { memoryStore } from '../src/store.js';
 import { MAC_A, MAC_B, fakeClock, fakeSlides } from './helpers/fakeSlide.js';
 
@@ -20,7 +21,7 @@ const id = (mac) => `ext:${SELECTOR}:slide:${mac}`;
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 
-async function setup(t, { config = { slides: A }, slides }) {
+async function setup(t, { config = { slides: A }, slides, request }) {
   const clock = fakeClock();
   const gladys = createFakeGladys({ selector: SELECTOR, config, devices: [] });
   const timers = {
@@ -32,7 +33,7 @@ async function setup(t, { config = { slides: A }, slides }) {
   const app = new SlideApp({
     gladys,
     logger: quiet,
-    client: new SlideClient({ request: slides.request, now: clock.now }),
+    client: new SlideClient({ request: request ?? slides.request, now: clock.now }),
     store: memoryStore(),
     now: clock.now,
     timers,
@@ -124,4 +125,72 @@ test('m3: a configuration changed meanwhile is said so, not "at no address"', as
   assert.equal(ack.success, false);
   assert.match(ack.error, /configuration a changé entre-temps/);
   assert.ok(!slides.paths(A).includes('/rpc/Slide.SetPos'));
+});
+
+/**
+ * A request whose first SetPos is written then held (move 1 in flight), the
+ * STOPs counted, and the identity reads after it failing when `failInfo`.
+ */
+function heldFirstMove(slides, { failInfo = false, slowSecondStop = false } = {}) {
+  const state = { gate: undefined, stops: 0, order: [] };
+  state.request = async (req) => {
+    if (req.path === '/rpc/Slide.SetPos' && state.gate === undefined) {
+      req.beforeSend?.();
+      state.order.push('SetPos#1');
+      await new Promise((r) => {
+        state.gate = r;
+      });
+      return slides.request({ ...req, beforeSend: undefined });
+    }
+    if (req.path === '/rpc/Slide.Stop') {
+      state.stops += 1;
+      if (slowSecondStop && state.stops === 2) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+    }
+    if (failInfo && req.path === '/rpc/Slide.GetInfo' && state.gate !== undefined) {
+      throw new SlideError('unreachable', { sent: false });
+    }
+    const res = await slides.request(req);
+    if (req.path !== '/rpc/Slide.GetInfo') {
+      state.order.push(req.path === '/rpc/Slide.SetPos' ? 'SetPos#2' : 'Stop');
+    }
+    return res;
+  };
+  return state;
+}
+
+test('review 3 (R4): a move asked after the STOP but never sent does not skip the second STOP', async (t) => {
+  const slides = fakeSlides({ [A]: { mac: MAC_A, pos: 0.5 } });
+  const held = heldFirstMove(slides, { failInfo: true });
+  const { gladys } = await setup(t, { slides, request: held.request });
+  const move1 = press(gladys, MAC_A, 'state', -1);
+  for (let i = 0; i < 10 && held.gate === undefined; i += 1) await flush();
+  assert.equal((await press(gladys, MAC_A, 'state', 0)).success, true);
+  const move2 = press(gladys, MAC_A, 'state', 1); // its identity read will fail
+  await flush();
+  held.gate();
+  await move1;
+  const ack2 = await move2;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ack2.success, false, 'move 2 refused, nothing sent');
+  assert.equal(held.stops, 2, 'move 1 is stopped again');
+});
+
+test('review 3 (R2): the second STOP never lands after the SetPos of a move sent after it', async (t) => {
+  const slides = fakeSlides({ [A]: { mac: MAC_A, pos: 0.5 } });
+  const held = heldFirstMove(slides, { slowSecondStop: true });
+  const { gladys } = await setup(t, { slides, request: held.request });
+  const move1 = press(gladys, MAC_A, 'state', -1);
+  for (let i = 0; i < 10 && held.gate === undefined; i += 1) await flush();
+  assert.equal((await press(gladys, MAC_A, 'state', 0)).success, true);
+  const move2 = press(gladys, MAC_A, 'state', 1);
+  await flush();
+  held.gate();
+  await move1;
+  const ack2 = await move2;
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(ack2.success, true, ack2.error);
+  assert.equal(held.order.at(-1), 'SetPos#2', held.order.join(' | '));
+  assert.equal(slides.slide(A).pos, 0, 'the curtain opens as asked last');
 });

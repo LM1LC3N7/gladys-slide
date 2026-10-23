@@ -142,7 +142,8 @@ export class SlideApp {
     this.inFlight = new Map();
     /** Commands numbered on arrival; Slide id -> number of its last move asked */
     this.commandSeq = 0;
-    this.lastMoveSeq = new Map();
+    /** Slide id -> number of the last move whose acting request LEFT (review 3) */
+    this.sentMoveSeq = new Map();
     /** Slide id -> when its last command left: a read begun before is not applied */
     this.lastSentAt = new Map();
     /** device external id -> device published in this run (a publication never shrinks) */
@@ -1035,17 +1036,29 @@ export class SlideApp {
     if (!this.memory || !slot) {
       throw this.refusal(ERRORS.unknownDevice);
     }
-    // Numbered on arrival: a second STOP never stops a move asked after the
-    // STOP it repeats (approval m1).
+    // Numbered on arrival; counted as "newer than a STOP" only once its acting
+    // request leaves (see send(): a second STOP never stops a move asked and
+    // sent after the STOP it repeats, and is never lost to one that did not
+    // leave).
     this.commandSeq += 1;
-    this.lastMoveSeq.set(target.id, this.commandSeq);
-    const ticket = { id: target.id, plan, generation: this.generation, cancelled: false };
+    const ticket = {
+      id: target.id,
+      seq: this.commandSeq,
+      plan,
+      generation: this.generation,
+      cancelled: false,
+    };
     if (!this.tickets.has(target.id)) {
       this.tickets.set(target.id, new Set());
     }
     this.tickets.get(target.id).add(ticket);
+    const run = slot.lane.run(PRIORITY.command, () => this.command(slot, ticket, received));
+    const finish = () => {
+      ticket.finished = true;
+    };
+    ticket.done = run.then(finish, finish);
     try {
-      return await slot.lane.run(PRIORITY.command, () => this.command(slot, ticket, received));
+      return await run;
     } finally {
       this.tickets.get(target.id)?.delete(ticket);
     }
@@ -1134,11 +1147,21 @@ export class SlideApp {
         check();
         ticket.sent = true;
         this.lastSentAt.set(id, this.now());
+        ticket.previousSent = this.sentMoveSeq.get(id);
+        this.sentMoveSeq.set(id, Math.max(ticket.previousSent ?? 0, ticket.seq));
       },
       // API v1: the first request was answered 401 with a challenge, so it
-      // did nothing: a STOP arriving now still cancels this move (review I1).
+      // did nothing: a STOP arriving now still cancels this move (review I1),
+      // and it does not count as a move that left.
       onChallenge: () => {
         ticket.sent = false;
+        if (this.sentMoveSeq.get(id) === ticket.seq) {
+          if (ticket.previousSent === undefined) {
+            this.sentMoveSeq.delete(id);
+          } else {
+            this.sentMoveSeq.set(id, ticket.previousSent);
+          }
+        }
       },
     };
     const request =
@@ -1268,20 +1291,30 @@ export class SlideApp {
 
   /**
    * A move was leaving when the STOP came: once it is answered, STOP again
-   * (one try), unless a move of that Slide was asked after the STOP: the
-   * user wants it, the second STOP would stop it (approval m1).
+   * (one try), unless a move of that Slide asked after the STOP has LEFT: the
+   * user wants it, the second STOP would stop it (approval m1). A newer move
+   * still waiting is awaited first: left -> no second STOP; refused or not
+   * sent -> the second STOP goes (review 3: in doubt, STOP).
    */
   reaffirmStop(slot, id, leaving, stopSeq) {
     const generation = this.generation;
-    const newer = () => (this.lastMoveSeq.get(id) ?? 0) > stopSeq;
+    const newer = () => (this.sentMoveSeq.get(id) ?? 0) > stopSeq;
+    const waiting = () =>
+      [...(this.tickets.get(id) ?? [])]
+        .filter((t) => t.seq > stopSeq && !t.finished)
+        .map((t) => t.done);
     Promise.resolve(leaving)
       .catch(() => {})
       .then(async () => {
+        // Each newer move ends within its 4.3 s; new ones may arrive meanwhile.
+        for (let list = waiting(); list.length > 0 && !newer(); list = waiting()) {
+          await Promise.all(list);
+        }
         if (this.stale(slot, generation)) {
           return;
         }
         if (newer()) {
-          this.logger.info(`Slide ${id}: second stop not sent, a move was asked after the stop`);
+          this.logger.info(`Slide ${id}: second stop not sent, a move sent after the stop`);
           return;
         }
         try {
@@ -1289,7 +1322,7 @@ export class SlideApp {
             timeout: TIMINGS.commandAnswerBy,
             beforeSend: () => {
               if (newer()) {
-                const skipped = new Error('a move was asked after the stop');
+                const skipped = new Error('a move was sent after the stop');
                 skipped.skipped = true;
                 throw skipped;
               }
@@ -1299,7 +1332,7 @@ export class SlideApp {
           this.logger.info(`Slide ${id}: stop sent again after a move that was leaving`);
         } catch (err) {
           if (err?.skipped) {
-            this.logger.info(`Slide ${id}: second stop not sent, a move was asked after the stop`);
+            this.logger.info(`Slide ${id}: second stop not sent, a move sent after the stop`);
             return;
           }
           this.logger.warn(`Slide ${id}: second stop failed (${reasonOf(err).en})`);
