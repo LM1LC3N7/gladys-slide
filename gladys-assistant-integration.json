@@ -6,8 +6,8 @@
     "en": "Slide curtain motors (Innovation in Motion) over their local API. Unofficial.",
     "fr": "Moteurs de rideaux Slide (Innovation in Motion) par leur API locale. Non officiel."
   },
-  "version": "0.1.1",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-slide:0.1.1",
+  "version": "0.1.2",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-slide:0.1.2",
   "gladys_version": ">=5.1.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-slide/main/cover.png",
   "categories": ["appliances"],

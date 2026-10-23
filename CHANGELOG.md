@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-23
+
 ### Fixed
 
 - The second STOP sent after a move that was leaving is no longer sent when a
@@ -56,5 +58,6 @@ the notes of the version's GitHub Release.
 - A "Test the connection" button, English and French texts, the state of each
   Slide in the connection status.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-slide/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-slide/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-slide/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-slide/releases/tag/v0.1.1
